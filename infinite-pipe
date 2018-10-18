@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+#set -uo pipefail
+#IFS=$'\n\t'
+
+#/ Usage:
+#/ Description:
+#/ Examples:
+#/ Options:
+#/   --help: Display this help message
+usage() { grep '^#/' "$0" | cut -c4- ; exit 0 ; }
+expr "$*" : ".*--help" > /dev/null && usage
+
+# TODO handle setting log levels??
+# readonly LOG_FILE="/tmp/$(basename "$0").log"
+readonly LOG_FILE="/tmp/seb-test.log"
+info()    { echo "[INFO]    $@" | tee -a "$LOG_FILE" >&2 ; }
+warning() { echo "[WARNING] $@" | tee -a "$LOG_FILE" >&2 ; }
+error()   { echo "[ERROR]   $@" | tee -a "$LOG_FILE" >&2 ; }
+fatal()   { echo "[FATAL]   $@" | tee -a "$LOG_FILE" >&2 ; exit 1 ; }
+
+cleanup() {
+    # Remove temporary files
+    # Restart services
+    # ...
+    true
+}
+
+prepare_output_directory() {
+  mkdir -p /tmp/.infinite-pipe.d/
+}
+
+last_output_filepath() {
+  local filepath="$(ls /tmp/.infinite-pipe.d/*.log 2> /dev/null | tail -n 1)"
+  info "last output filepath = $filepath"
+  echo "$filepath"
+}
+
+next_output_filepath() {
+  local current_time="$(date +'%s')"
+  echo "/tmp/.infinite-pipe.d/${current_time}.log"
+}
+
+execute_command() {
+  local command_string="${1:?No command to execute}"
+  info "Running command: $command_string"
+  # TODO handle dry runs?
+  eval "${command_string}"
+
+}
+remove_last_stdout() {
+  local command_string="rm $(last_output_filepath)"
+  execute_command "$command_string"
+}
+
+replay_last_stdout() {
+  local command_string="cat '$(last_output_filepath)'"
+  execute_command "$command_string"
+}
+
+
+_infinite_pipe() {
+  if [ -z "$AT_PROMPT" ]; then 
+    return
+  fi
+  unset AT_PROMPT
+
+  local command_string=`HISTTIMEFORMAT= history 1 | sed -e "s/^[  ]*[0-9]*[  ]*//"`;
+  info "Command string = $command_string"
+  # local command_string=${1:?No command string found}
+  prepare_output_directory
+
+  local starts_with_pipe='^\s*\|'
+  local back_command='^\s*back\s*'
+
+  if [[ $command_string =~ $starts_with_pipe ]]; then
+
+    info "Command starts with | '${command_string}'"
+    local current_command="$(echo "$command_string" | sed 's!\s*|\s*!!' )"
+    info "Actual command: '${current_command}'"
+
+    local new_command="cat '$(last_output_filepath)' | eval \"$current_command\" | tee $(next_output_filepath)"
+    execute_command "$new_command"
+
+    if [[ $? > 0 ]]; then
+      info "Last command was unsuccessful, removing it's stdout"
+      remove_last_stdout
+      remove_last_stdout
+    fi
+    return 1 # this needs to be send to bash when running in debug mode
+
+  elif [[ $command_string =~ $back_command ]]; then
+
+    info "Command is 'back' command"
+    remove_last_stdout
+    replay_last_stdout # so it's ready for the next 
+
+    return 1 # this needs to be send to bash when running in debug mode
+  else
+    # TODO this is only used for testing, bash will handle this by default
+    #local new_command="eval \"$command_string\" | tee $(next_output_filepath)"
+    #execute_command $new_command
+    info "running the command without changing it $command_string"
+    local new_command="eval \"$command_string\" | tee $(next_output_filepath)"
+    info "new command $new_command"
+    execute_command "$new_command"
+    return 1
+  fi
+}
+
+#if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then
+    #trap cleanup EXIT
+
+    #_infinite_pipe "$@"
+#fi
